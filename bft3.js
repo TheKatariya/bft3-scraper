@@ -1,4 +1,5 @@
 require('dotenv').config();
+const fs = require('fs');
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
 const { CookieJar } = require('tough-cookie');
@@ -88,6 +89,15 @@ function medalLabel(medal) {
   return map[medal] ?? '';
 }
 
+function escapeCsv(val) {
+  if (val == null) return '';
+  const str = String(val);
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
+}
+
 async function main() {
   if (!process.env.BFT_EMAIL || !process.env.BFT_PASSWORD) {
     throw new Error('Missing BFT_EMAIL or BFT_PASSWORD in .env file');
@@ -99,7 +109,11 @@ async function main() {
   const sessions = await fetchSessions();
   if (sessions.length === 0) {
     console.error('No sessions found for today. Exiting.');
-    console.log(JSON.stringify([]));
+    if ((process.env.OUTPUT_MODE ?? 'json') === 'csv') {
+      console.error('OUTPUT_MODE=csv — no rows to write.');
+    } else {
+      console.log(JSON.stringify([]));
+    }
     return;
   }
 
@@ -147,7 +161,26 @@ async function main() {
   }
 
   console.error(`\nDone! ${rows.length} member records across ${sessions.length} session(s).`);
-  console.log(JSON.stringify(rows));
+
+  const outputMode = process.env.OUTPUT_MODE ?? 'json';
+
+  if (outputMode === 'csv') {
+    const outputDir = '/app/output';
+    fs.mkdirSync(outputDir, { recursive: true });
+    const filename = `bft3sessions-${dateStr}.csv`;
+    const filepath = `${outputDir}/${filename}`;
+
+    const headers = Object.keys(rows[0]);
+    const csvLines = [
+      headers.join(','),
+      ...rows.map(row => headers.map(h => escapeCsv(row[h])).join(',')),
+    ];
+
+    fs.writeFileSync(filepath, csvLines.join('\n') + '\n', 'utf8');
+    console.error(`CSV written to ${filepath}`);
+  } else {
+    console.log(JSON.stringify(rows));
+  }
 }
 
 main().catch(err => {

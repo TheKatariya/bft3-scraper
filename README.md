@@ -1,13 +1,15 @@
 # bft3-scraper
 
-Nightly scraper for BFT³ (BFT Cubed) session and member data. Authenticates into `admin.bodyfittraining.com`, fetches today's studio sessions and each session's member records, and outputs a JSON array to stdout. n8n captures that output and inserts rows into MySQL.
+Nightly scraper for BFT³ (BFT Cubed) session and member data. Authenticates into `admin.bodyfittraining.com`, fetches today's studio sessions and each session's member records, and outputs either a JSON array to stdout (for n8n/scripting) or a CSV file (for standalone use).
 
 ## How it works
 
 1. Scraper authenticates and fetches sessions + member records for today
 2. Debug/progress messages go to `stderr`
-3. Final JSON array of row objects goes to `stdout`
-4. n8n parses stdout, checks for empty array, then batch-inserts into `bft3_sessions`
+3. Output depends on `OUTPUT_MODE`:
+   - `json` (default) — final JSON array of row objects goes to `stdout`
+   - `csv` — CSV file written to `/app/output/bft3sessions-YYYY-MM-DD.csv`
+4. n8n (json mode) parses stdout, checks for empty array, then batch-inserts into `bft3_sessions`
 
 ## Local development
 
@@ -29,7 +31,7 @@ Stdout will be the JSON array. Stderr will show progress logs.
 docker build -t bft3-scraper .
 ```
 
-### Run
+### Run (JSON mode — default, for n8n/scripting)
 
 ```bash
 docker run --rm \
@@ -38,9 +40,9 @@ docker run --rm \
   bft3-scraper
 ```
 
-Credentials are passed via environment variables at runtime — they are never baked into the image.
+Without `-e OUTPUT_MODE=csv`, the container outputs JSON to stdout. Stderr carries progress logs.
 
-### Capture stdout only (JSON)
+### Capture stdout only (JSON, suppress logs)
 
 ```bash
 docker run --rm \
@@ -48,6 +50,21 @@ docker run --rm \
   --env BFT_PASSWORD=yourpassword \
   bft3-scraper 2>/dev/null
 ```
+
+## Standalone usage (no n8n)
+
+If you just want a CSV file dropped into a local folder — no n8n required:
+
+```bash
+docker run --rm \
+  -e BFT_EMAIL=your@email.com \
+  -e BFT_PASSWORD=yourpassword \
+  -e OUTPUT_MODE=csv \
+  -v $(pwd)/output:/app/output \
+  bft3-scraper
+```
+
+The CSV will be written to `./output/bft3sessions-YYYY-MM-DD.csv` on your host machine. The `output/` directory will be created automatically if it doesn't exist inside the container.
 
 ## n8n integration
 
