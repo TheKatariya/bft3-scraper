@@ -1,0 +1,9 @@
+# Environment credentials — never commit
+.env
+
+# Dependencies
+node_modules/
+
+# Misc
+*.log
+.DS_Store
