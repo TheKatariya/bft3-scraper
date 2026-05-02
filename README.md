@@ -1,27 +1,24 @@
 # bft3-scraper
 
-Nightly scraper for BFT³ (BFT Cubed) session and member data. Authenticates into `admin.bodyfittraining.com`, fetches today's studio sessions and each session's member records, and outputs either a JSON array to stdout (for n8n/scripting) or a CSV file (for standalone use).
+Nightly scraper for BFT³ (BFT Cubed) session and member data. Uses Playwright to authenticate into `admin.bodyfittraining.com`, navigate the sessions SPA, and capture per-member performance data. Outputs either a JSON array to stdout (for n8n ingestion) or a CSV file (for standalone use).
 
 ## How it works
 
-1. Scraper authenticates and fetches sessions + member records for today
-2. Debug/progress messages go to `stderr`
-3. Output depends on `OUTPUT_MODE`:
-   - `json` (default) — final JSON array of row objects goes to `stdout`
-   - `csv` — CSV file written to `/app/output/bft3sessions-YYYY-MM-DD.csv`
-4. n8n (json mode) parses stdout, checks for empty array, then batch-inserts into `bft3_sessions`
+The BFT admin portal is a Vue.js SPA — member data is only loaded when you click a session row in the UI. The scraper:
 
-## Local development
+1. Logs in via Playwright (headless Chromium)
+2. Intercepts the `/bft-cubed/get-sessions/v3` API response on page load to capture today's session list
+3. Clicks each session row and waits for the per-member API response
+4. Outputs all records in one shot
+
+Progress/debug messages go to `stderr`. Final output goes to `stdout`.
+
+## Setup
 
 ```bash
 cp .env.example .env
-# Fill in BFT_EMAIL and BFT_PASSWORD in .env
-
-npm install
-npm start
+# Fill in BFT_EMAIL and BFT_PASSWORD
 ```
-
-Stdout will be the JSON array. Stderr will show progress logs.
 
 ## Docker
 
@@ -34,47 +31,56 @@ docker build -t bft3-scraper .
 ### Run (JSON mode — default, for n8n/scripting)
 
 ```bash
-docker run --rm \
-  --env BFT_EMAIL=your@email.com \
-  --env BFT_PASSWORD=yourpassword \
-  bft3-scraper
+docker run --rm --env-file .env bft3-scraper
 ```
 
-Without `-e OUTPUT_MODE=csv`, the container outputs JSON to stdout. Stderr carries progress logs.
+stdout is a JSON array of member session records. stderr shows progress.
 
-### Capture stdout only (JSON, suppress logs)
+### Standalone usage (CSV, no n8n needed)
 
 ```bash
 docker run --rm \
-  --env BFT_EMAIL=your@email.com \
-  --env BFT_PASSWORD=yourpassword \
-  bft3-scraper 2>/dev/null
-```
-
-## Standalone usage (no n8n)
-
-If you just want a CSV file dropped into a local folder — no n8n required:
-
-```bash
-docker run --rm \
-  -e BFT_EMAIL=your@email.com \
-  -e BFT_PASSWORD=yourpassword \
+  --env-file .env \
   -e OUTPUT_MODE=csv \
   -v $(pwd)/output:/app/output \
   bft3-scraper
 ```
 
-The CSV will be written to `./output/bft3sessions-YYYY-MM-DD.csv` on your host machine. The `output/` directory will be created automatically if it doesn't exist inside the container.
+Writes `./output/bft3sessions-YYYY-MM-DD.csv` on your host. The output directory is created automatically inside the container.
 
 ## n8n integration
 
-The n8n workflow (`bft3-nightly-ingest`) runs nightly at 23:30:
+The `bft3-nightly-ingest` workflow runs at 23:30 nightly:
 
-1. **Cron trigger** — `30 23 * * *`
-2. **Execute Command** — runs the Docker container with credentials from n8n env vars
-3. **Code node** — parses stdout JSON into individual items
-4. **If node** — skips if array is empty
-5. **MySQL node** — inserts each row into `bft3_sessions` using Execute SQL with INSERT IGNORE on `record_id`
+1. **Schedule Trigger** — `30 23 * * *`
+2. **SSH node** — `docker run --rm --env-file /home/pkatariya/bft3-scraper/.env bft3-scraper`
+3. **Code node** — parses stdout JSON into items
+4. **IF node** — stops if array is empty
+5. **MySQL node** — `INSERT IGNORE` into `bft3_sessions` on `record_id`
+
+## Output fields
+
+| Field | Type | Description |
+|---|---|---|
+| `session_id` | string | BFT session class ID |
+| `session_title` | string | Session name (e.g. "BFT3 45 Min") |
+| `session_date` | string | YYYY-MM-DD |
+| `session_start_time` | string | HH:MM:SS |
+| `session_length` | int | Session length in seconds |
+| `target_pxi` | int | Target PXI for the session |
+| `record_id` | string | Unique member-session record ID (dedup key) |
+| `member_name` | string | Member full name |
+| `member_id` | string | Member ID |
+| `sensor_id` | string | HR sensor/device ID |
+| `pxi` | int | Member's PXI score |
+| `avg_hr_percent` | float | Average HR as % of max |
+| `max_hr` | int | Peak HR during session |
+| `member_max_hr` | int | Member's recorded max HR |
+| `calories` | float | Calories burned |
+| `medal` | string | Gold / Silver / Bronze / None |
+| `duration` | int | Active time in seconds |
+| `zone0_time`–`zone5_time` | int | Seconds spent in each HR zone |
+| `type` | string | Record type |
 
 ## MySQL table
 
@@ -109,11 +115,4 @@ CREATE TABLE IF NOT EXISTS bft3_sessions (
 );
 ```
 
-See `schema.sql` for the full DDL.
-
-## Data notes
-
-- All time values (`session_length`, `duration`, `zone*_time`) are stored as **integers in seconds**
-- `calories` is stored as a float
-- `record_id` is unique — re-runs won't create duplicates
-- `medal` values: `Gold`, `Silver`, `Bronze`, `None`, or empty string
+All time values are in **seconds**. `record_id` is the deduplication key — re-runs won't create duplicates.
